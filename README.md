@@ -24,11 +24,77 @@ memory corruption, and common binary vulnerabilities.
 - Radare2
 - Python
 
-Here is the Markdown formatted cleanly for your README file, with proper code block formatting and clear headers:
+## x86 Assembly Quick Reference
 
-## Challenges
+### General-Purpose Registers
 
-### ex00 - Stack Buffer Overflow
+| Register | Common Usage |
+|----------|--------------|
+| `EAX` | Arithmetic operations, temporary values, and function return values |
+| `EBX` | General-purpose register, commonly used to preserve values |
+| `ECX` | Counter register, commonly used in loops and string operations |
+| `EDX` | General-purpose register; also used with `EAX` for multiplication and division |
+| `ESI` | Source index, commonly used for memory and string operations |
+| `EDI` | Destination index, commonly used for memory and string operations |
+| `EBP` | Base pointer used to reference the current stack frame |
+| `ESP` | Stack pointer; points to the current top of the stack |
+| `EIP` | Instruction pointer; contains the address of the next instruction to execute |
+| `EFLAGS` | Contains CPU status flags such as Zero, Carry, Sign, and Overflow |
+
+### Important Instructions
+
+| Instruction | Description |
+|-------------|-------------|
+| `mov` | Copies data from a source to a destination |
+| `lea` | Loads the effective address of a memory operand |
+| `push` | Places a value onto the stack |
+| `pop` | Removes a value from the stack |
+| `add` | Performs addition |
+| `sub` | Performs subtraction |
+| `inc` | Increments a value by one |
+| `dec` | Decrements a value by one |
+| `cmp` | Compares two values and updates the CPU flags |
+| `test` | Performs a bitwise AND and updates the CPU flags |
+| `jmp` | Performs an unconditional jump |
+| `je` / `jz` | Jumps when the Zero Flag is set |
+| `jne` / `jnz` | Jumps when the Zero Flag is not set |
+| `call` | Calls a function and saves the return address |
+| `ret` | Returns from a function using the saved return address |
+| `leave` | Restores the previous stack frame |
+| `and` | Performs a bitwise AND operation |
+| `or` | Performs a bitwise OR operation |
+| `xor` | Performs a bitwise XOR operation |
+| `imul` | Performs signed multiplication |
+| `idiv` | Performs signed division |
+| `nop` | Performs no operation and moves to the next instruction |
+
+
+### argc / argv — 32-bit x86
+
+| Stack offset | Meaning | Size |
+|---|---|---|
+| `[ebp+0x8]` | `argc` | 4 bytes |
+| `[ebp+0xc]` | `argv` | 4 bytes |
+| `argv + 0x0` | `argv[0]` | 4 bytes |
+| `argv + 0x4` | `argv[1]` | 4 bytes |
+| `argv + 0x8` | `argv[2]` | 4 bytes |
+| `argv + 0xc` | `argv[3]` | 4 bytes |
+
+**Why `0x4`?**
+
+On 32-bit x86, a pointer is **4 bytes**, so each `argv[i]` entry occupies 4 bytes.
+
+For example:
+
+```asm
+mov eax, [ebp+0xc]    ; eax = argv
+add eax, 0x4          ; eax = &argv[1]
+mov eax, [eax]        ; eax = argv[1]
+````
+
+# Challenges
+
+## ex00 - Stack Buffer Overflow
 
 #### Objective
 
@@ -56,7 +122,6 @@ gdb-peda$ pdisass main
 0x08048411 <+29>:    mov    eax,DWORD PTR [esp+0x5c]
 0x08048415 <+33>:    test   eax,eax
 0x08048417 <+35>:    je     0x8048427
-
 ```
 
 **Key Layout Observations:**
