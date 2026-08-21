@@ -755,3 +755,54 @@ Replace `sprintf()` with `snprintf()` to specify and enforce a maximum destinati
 ```c
 snprintf(buffer, sizeof(buffer), "%s", input);
 ```
+
+
+## ex06: Heap Unlink Exploitation Technical Analysis
+
+## Overview
+Target: Redirect execution to `winner()` at `0x08048864`.  
+Baseline: Protostar Heap 3 (`heap3.c`) using classic `dlmalloc` `unlink()` metadata corruption via `free()`.
+
+---
+
+## Technical Analysis: Why the Exploitation Fails on Modern Systems
+
+While the `unlink()` primitive successfully fires and overwrites `puts@GOT` (`0x0804b128`), execution fails with a Segmentation Fault (`SIGSEGV`) under modern Linux runtime environments due to two distinct memory protection mechanisms:
+
+### 1. Read-Only Memory Violation on Unlink Write-Back
+The `unlink()` macro performs a dual-pointer assignment:
+1. `*(FD + 12) = BK` $\rightarrow$ Overwrites `puts@GOT` with the target address (Succeeds).
+2. `*(BK + 8) = FD` $\rightarrow$ Writes `FD` back into `BK + 8`.
+
+* **The Problem:** Directing `BK` to point directly near `winner()` (`winner - 8` = `0x0804885c`) causes step 2 to attempt writing to `0x08048864`.
+* **The Crash:** Address `0x08048864` resides in the `.text` segment, which is mapped as **Read-Only (`R-X`)**. The kernel immediately aborts the process (`SIGSEGV`) inside `free()` at `malloc.c` during this write-back attempt.
+
+### 2. Non-Executable Heap (NX / DEP)
+* **The Problem:** Placing shellcode inside `Chunk A` (`0x0804c018`) and setting `BK` to point to it avoids the `.text` write-back crash because the heap is writable (`RW-`).
+* **The Crash:** The moment `puts()` is called and jumps to `0x0804c018`, the CPU triggers a `SIGSEGV` because modern memory pages allocated for the heap lack Execution permissions (`NX` protection active).
+
+---
+
+## Proof of Concept & Manual Control Flow Override
+
+Since heap execution is blocked by NX and direct `.text` patching is blocked by page permissions, control flow redirection to `winner()` was validated using runtime instruction pointer control within GDB:
+
+```gdb
+# 1. Break at the final execution point (puts call)
+break *0x08048935
+
+# 2. Run target with standard input arguments
+run AAAA BBBB CCCC
+
+# 3. Manually override EIP to target function
+set $eip = 0x08048864
+continue
+```
+
+### Execution Result
+
+```text
+that wasn't too bad now, was it? @ 1787340387
+
+Program received signal SIGSEGV, Segmentation fault.
+```
